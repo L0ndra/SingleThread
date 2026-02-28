@@ -1,0 +1,215 @@
+# SingleThread - Task-Centric Window Manager Configuration
+# Copy to ~/.config/singlethread/config.toml and customize
+
+# ─── General ────────────────────────────────────────────────────────
+[general]
+# Default layout for new tasks: "master-stack" or "bsp"
+default_layout = "master-stack"
+
+# Number of master windows in master-stack layout
+master_count = 1
+
+# Master area ratio (0.0 - 1.0)
+master_ratio = 0.55
+
+# Gap size in pixels between tiled windows
+gaps_inner = 6
+
+# Gap size in pixels between windows and screen edges
+gaps_outer = 6
+
+# Focus follows mouse
+focus_follows_mouse = true
+
+# Warp cursor to focused window
+cursor_warp = false
+
+# ─── Task Behavior ─────────────────────────────────────────────────
+[tasks]
+# Create a default "General" task on startup if no tasks exist
+create_default = true
+
+# Default task name for the initial task
+default_name = "General"
+
+# Show confirmation dialog before deleting a task with windows
+confirm_delete = true
+
+# When switching tasks, restore focus to last-focused window
+restore_focus = true
+
+# Maximum number of tasks (0 = unlimited)
+max_tasks = 0
+
+# ─── Outputs (Monitors) ────────────────────────────────────────────
+# Configure individual outputs by name
+# Use `stwctl output list` to discover output names
+#
+# [[output]]
+# name = "DP-1"
+# scale = 1.0
+# transform = "normal"  # normal, 90, 180, 270, flipped, flipped-90, flipped-180, flipped-270
+# position = { x = 0, y = 0 }
+# mode = "preferred"  # or "WIDTHxHEIGHT@RATE" e.g. "2560x1440@144"
+
+# ─── Keybindings ───────────────────────────────────────────────────
+# Modifier keys: Super, Alt, Ctrl, Shift
+# Key names follow xkbcommon naming (e.g., Return, space, a, F1, etc.)
+
+[keybindings]
+# Task management
+"Super+t" = "task:create"
+"Super+w" = "task:close"
+"Super+Tab" = "task:next"
+"Super+Shift+Tab" = "task:prev"
+"Super+1" = "task:switch:1"
+"Super+2" = "task:switch:2"
+"Super+3" = "task:switch:3"
+"Super+4" = "task:switch:4"
+"Super+5" = "task:switch:5"
+"Super+6" = "task:switch:6"
+"Super+7" = "task:switch:7"
+"Super+8" = "task:switch:8"
+"Super+9" = "task:switch:9"
+
+# Move window to task
+"Super+Shift+1" = "window:to-task:1"
+"Super+Shift+2" = "window:to-task:2"
+"Super+Shift+3" = "window:to-task:3"
+"Super+Shift+4" = "window:to-task:4"
+"Super+Shift+5" = "window:to-task:5"
+"Super+Shift+6" = "window:to-task:6"
+"Super+Shift+7" = "window:to-task:7"
+"Super+Shift+8" = "window:to-task:8"
+"Super+Shift+9" = "window:to-task:9"
+
+# Window management
+"Super+q" = "window:close"
+"Super+f" = "window:fullscreen"
+"Super+Shift+f" = "window:toggle-floating"
+"Super+g" = "window:toggle-global"
+"Super+h" = "window:focus:left"
+"Super+j" = "window:focus:down"
+"Super+k" = "window:focus:up"
+"Super+l" = "window:focus:right"
+"Super+Shift+h" = "window:swap:left"
+"Super+Shift+j" = "window:swap:down"
+"Super+Shift+k" = "window:swap:up"
+"Super+Shift+l" = "window:swap:right"
+"Super+Return" = "window:zoom"
+
+# Layout
+"Super+bracketright" = "layout:master-ratio:increase"
+"Super+bracketleft" = "layout:master-ratio:decrease"
+"Super+comma" = "layout:master-count:increase"
+"Super+period" = "layout:master-count:decrease"
+"Super+space" = "layout:cycle"
+
+# Workspace (within task)
+"Super+Alt+1" = "workspace:switch:1"
+"Super+Alt+2" = "workspace:switch:2"
+"Super+Alt+3" = "workspace:switch:3"
+"Super+Alt+Shift+1" = "window:to-workspace:1"
+"Super+Alt+Shift+2" = "window:to-workspace:2"
+"Super+Alt+Shift+3" = "window:to-workspace:3"
+
+# Launchers / shell
+"Super+d" = "launcher:open"
+"Super+grave" = "switcher:open"
+"Super+o" = "overview:open"
+"Super+Shift+Return" = "spawn:foot"
+"Super+Shift+q" = "compositor:exit"
+
+# ─── Window Rules ──────────────────────────────────────────────────
+# Rules match windows and assign behavior.
+# Match criteria: app_id, title (regex), class (XWayland)
+# Actions: task, global, floating, size, position, workspace
+
+# Example: make all file dialogs floating
+[[rule]]
+title = "(?i)(open|save|choose|select).*file"
+floating = true
+
+# Example: assign Firefox to a "Browser" task
+# [[rule]]
+# app_id = "firefox"
+# task = "Browser"
+
+# Example: make Spotify global
+# [[rule]]
+# app_id = "spotify"
+# global = true
+
+# Example: float password managers
+[[rule]]
+app_id = "keepassxc"
+floating = true
+size = { width = 800, height = 600 }
+
+# Example: PulseAudio volume control always floats
+[[rule]]
+app_id = "pavucontrol"
+floating = true
+size = { width = 600, height = 400 }
+
+# ─── UI Shell ──────────────────────────────────────────────────────
+[shell.panel]
+# Panel position: "top" or "bottom"
+position = "top"
+
+# Panel height in pixels
+height = 32
+
+# Show task indicators
+show_tasks = true
+
+# Show workspace indicators
+show_workspaces = true
+
+# Show system tray
+show_tray = true
+
+# Show clock
+show_clock = true
+
+# Clock format (strftime)
+clock_format = "%H:%M"
+
+# Show active window title
+show_title = true
+
+[shell.launcher]
+# Show recently used apps
+show_recent = true
+
+# Maximum number of results
+max_results = 20
+
+# Additional search paths for .desktop files
+# extra_paths = ["/opt/custom/share/applications"]
+
+[shell.notifications]
+# Enable notification daemon
+enabled = true
+
+# Default timeout in milliseconds (0 = persistent)
+default_timeout = 5000
+
+# Maximum number of visible notifications
+max_visible = 5
+
+# Position: "top-right", "top-left", "bottom-right", "bottom-left"
+position = "top-right"
+
+# ─── Appearance ────────────────────────────────────────────────────
+[appearance]
+# Border width for focused/unfocused windows (pixels)
+border_width = 2
+
+# Colors (hex RRGGBB or RRGGBBAA)
+border_focused = "7aa2f7"
+border_unfocused = "565f89"
+border_urgent = "f7768e"
+
+# Background color (shown when no windows cover the output)
+background = "1a1b26"

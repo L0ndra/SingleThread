@@ -1,0 +1,89 @@
+# Maintainer: SingleThread Contributors
+
+pkgbase=singlethread
+pkgname=('singlethread' 'singlethread-shell')
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Task-Centric Wayland Compositor and UI Shell'
+arch=('x86_64')
+url='https://github.com/singlethread/singlethread'
+license=('MIT')
+makedepends=(
+  'meson'
+  'ninja'
+  'wayland'
+  'wayland-protocols'
+  'wlroots-0.18'
+  'libinput'
+  'xkbcommon'
+  'pixman'
+  'json-c'
+  'libxcb'
+  'xcb-util-errors'
+  'gtk4'
+  'gtk4-layer-shell'
+  'scdoc'
+)
+
+build() {
+  cd "$srcdir/$pkgbase-$pkgver"
+  arch-meson build \
+    -Dxwayland=enabled \
+    -Dshell=true
+  meson compile -C build
+}
+
+check() {
+  cd "$srcdir/$pkgbase-$pkgver"
+  meson test -C build --no-rebuild
+}
+
+package_singlethread() {
+  pkgdesc='Task-Centric Wayland Compositor'
+  depends=(
+    'wayland'
+    'wlroots-0.18'
+    'libinput'
+    'xkbcommon'
+    'pixman'
+    'json-c'
+    'libxcb'
+  )
+  optdepends=(
+    'singlethread-shell: UI shell components (panel, launcher, switcher)'
+    'foot: Default terminal emulator'
+    'xdg-desktop-portal-wlr: Screen sharing support'
+  )
+
+  cd "$srcdir/$pkgbase-$pkgver"
+  DESTDIR="$pkgdir" meson install -C build
+
+  # Remove shell components (go into singlethread-shell)
+  rm -f "$pkgdir/usr/bin/stw-panel"
+  rm -f "$pkgdir/usr/bin/stw-launcher"
+  rm -f "$pkgdir/usr/bin/stw-switcher"
+  rm -f "$pkgdir/usr/bin/stw-notify"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+package_singlethread-shell() {
+  pkgdesc='SingleThread UI Shell (panel, launcher, switcher, notifications)'
+  depends=(
+    'singlethread'
+    'gtk4'
+    'gtk4-layer-shell'
+    'json-c'
+  )
+
+  cd "$srcdir/$pkgbase-$pkgver"
+  DESTDIR="$pkgdir" meson install -C build
+
+  # Keep only shell components
+  rm -f "$pkgdir/usr/bin/singlethread"
+  rm -f "$pkgdir/usr/bin/stwctl"
+  rm -rf "$pkgdir/usr/share/wayland-sessions"
+  rm -rf "$pkgdir/usr/share/doc"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

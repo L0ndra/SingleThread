@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=SingleThread
+Comment=Task-Centric Wayland Compositor
+Exec=singlethread
+Type=Application
+DesktopNames=SingleThread
