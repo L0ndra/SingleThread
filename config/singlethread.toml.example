@@ -203,13 +203,22 @@ position = "top-right"
 
 # ─── Appearance ────────────────────────────────────────────────────
 [appearance]
+# Theme: "tokyo-night" (default), "catppuccin", "nord", "gruvbox"
+theme = "tokyo-night"
+
 # Border width for focused/unfocused windows (pixels)
 border_width = 2
 
-# Colors (hex RRGGBB or RRGGBBAA)
+# Border radius for window decorations (pixels, 0 = sharp corners)
+border_radius = 8
+
+# Colors (hex RRGGBB or RRGGBBAA) - override theme defaults
 border_focused = "7aa2f7"
 border_unfocused = "565f89"
 border_urgent = "f7768e"
 
 # Background color (shown when no windows cover the output)
 background = "1a1b26"
+
+# Dim inactive windows (0.0 = no dim, 1.0 = fully dim)
+inactive_dim = 0.05

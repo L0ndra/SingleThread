@@ -115,6 +115,9 @@ static void handle_new_xdg_toplevel(struct wl_listener *listener, void *data) {
 	view->set_app_id.notify = stw_view_handle_set_app_id;
 	wl_signal_add(&toplevel->events.set_app_id, &view->set_app_id);
 
+	view->commit.notify = stw_view_handle_commit;
+	wl_signal_add(&toplevel->base->surface->events.commit, &view->commit);
+
 	/* Add to server's view list */
 	wl_list_insert(&server->views, &view->link);
 
@@ -489,12 +492,21 @@ void stw_server_focus_view(struct stw_server *server, struct stw_view *view) {
 		return;
 	}
 
-	/* Deactivate previously focused surface */
+	/* Deactivate previously focused surface and update border color */
 	if (prev_surface) {
 		struct wlr_xdg_toplevel *prev_toplevel =
 			wlr_xdg_toplevel_try_from_wlr_surface(prev_surface);
 		if (prev_toplevel) {
 			wlr_xdg_toplevel_set_activated(prev_toplevel, false);
+			/* Find the previous view and set unfocused border */
+			struct stw_view *prev_view;
+			wl_list_for_each(prev_view, &server->views, link) {
+				if (prev_view->type == STW_VIEW_XDG_TOPLEVEL &&
+						prev_view->xdg_toplevel == prev_toplevel) {
+					stw_view_update_border_color(prev_view, false);
+					break;
+				}
+			}
 		}
 	}
 
@@ -512,6 +524,9 @@ void stw_server_focus_view(struct stw_server *server, struct stw_view *view) {
 		break;
 #endif
 	}
+
+	/* Update border color for focused view */
+	stw_view_update_border_color(view, true);
 
 	/* Send keyboard focus */
 	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);

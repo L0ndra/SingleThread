@@ -54,6 +54,9 @@ struct stw_view {
 	/* Scene graph node */
 	struct wlr_scene_tree *scene_tree;
 
+	/* Border decorations (4 rects: top, bottom, left, right) */
+	struct wlr_scene_rect *border[4];
+
 	/* State */
 	enum stw_view_state state;
 	bool is_global;                /* visible across all tasks */
@@ -106,6 +109,7 @@ void stw_view_handle_request_maximize(struct wl_listener *listener, void *data);
 void stw_view_handle_request_fullscreen(struct wl_listener *listener, void *data);
 void stw_view_handle_set_title(struct wl_listener *listener, void *data);
 void stw_view_handle_set_app_id(struct wl_listener *listener, void *data);
+void stw_view_handle_commit(struct wl_listener *listener, void *data);
 
 /* View operations */
 
@@ -135,5 +139,8 @@ const char *stw_view_get_title(struct stw_view *view);
 
 /* Visibility (task-scoped) */
 void stw_view_set_visible(struct stw_view *view, bool visible);
+
+/* Border decorations */
+void stw_view_update_border_color(struct stw_view *view, bool focused);
 
 #endif /* STW_VIEW_H */

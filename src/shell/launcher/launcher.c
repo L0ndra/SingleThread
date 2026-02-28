@@ -1,8 +1,10 @@
 /*
  * SingleThread - Task-Centric Wayland Compositor
- * launcher.c - Application launcher (layer-shell overlay)
+ * launcher.c - Beautiful application launcher overlay
  *
- * Reads .desktop files, provides search, launches into current task.
+ * Design: centered floating card with frosted glass background,
+ * large search bar, app results with icons + name + description,
+ * keyboard shortcut hints, smooth transitions.
  */
 #define _POSIX_C_SOURCE 200809L
 #include <dirent.h>
@@ -24,13 +26,14 @@ typedef struct {
 	char *icon;
 	char *desktop_id;
 	char *comment;
+	char *generic_name;
+	char **categories;
 	gboolean no_display;
 } DesktopEntry;
 
 static GList *entries = NULL;
 
 static char *strip_exec_codes(const char *exec) {
-	/* Remove %f, %F, %u, %U etc. from Exec lines */
 	char *result = g_strdup(exec);
 	char *p;
 	while ((p = strchr(result, '%')) != NULL) {
@@ -42,6 +45,12 @@ static char *strip_exec_codes(const char *exec) {
 	}
 	g_strstrip(result);
 	return result;
+}
+
+static int entry_compare(gconstpointer a, gconstpointer b) {
+	const DesktopEntry *ea = a;
+	const DesktopEntry *eb = b;
+	return g_utf8_collate(ea->name, eb->name);
 }
 
 static void load_desktop_entries(const char *dir) {
@@ -82,6 +91,8 @@ static void load_desktop_entries(const char *dir) {
 		entry->desktop_id = g_strdup(ent->d_name);
 		entry->comment = g_key_file_get_locale_string(kf, "Desktop Entry",
 			"Comment", NULL, NULL);
+		entry->generic_name = g_key_file_get_locale_string(kf,
+			"Desktop Entry", "GenericName", NULL, NULL);
 		entry->no_display = g_key_file_get_boolean(kf, "Desktop Entry",
 			"NoDisplay", NULL);
 
@@ -93,6 +104,7 @@ static void load_desktop_entries(const char *dir) {
 			g_free(entry->icon);
 			g_free(entry->desktop_id);
 			g_free(entry->comment);
+			g_free(entry->generic_name);
 			g_free(entry);
 			continue;
 		}
@@ -104,9 +116,6 @@ static void load_desktop_entries(const char *dir) {
 }
 
 static void load_all_entries(void) {
-	/* XDG data directories */
-	const char *data_dirs = g_get_system_data_dirs()[0] ?
-		NULL : "/usr/share";
 	const gchar * const *dirs = g_get_system_data_dirs();
 	for (int i = 0; dirs[i]; i++) {
 		char path[1024];
@@ -114,7 +123,6 @@ static void load_all_entries(void) {
 		load_desktop_entries(path);
 	}
 
-	/* User applications */
 	const char *data_home = g_get_user_data_dir();
 	if (data_home) {
 		char path[1024];
@@ -122,9 +130,7 @@ static void load_all_entries(void) {
 		load_desktop_entries(path);
 	}
 
-	/* Sort alphabetically */
-	entries = g_list_sort(entries, (GCompareFunc)(void *)strcmp);
-	(void)data_dirs;
+	entries = g_list_sort(entries, entry_compare);
 }
 
 /* ─── IPC ──────────────────────────────────────────────────────── */
@@ -132,16 +138,12 @@ static void load_all_entries(void) {
 static void ipc_launch(const char *exec) {
 	const char *socket_path = getenv("SINGLETHREAD_SOCKET");
 	if (!socket_path) {
-		/* Fall back to direct exec */
 		g_spawn_command_line_async(exec, NULL);
 		return;
 	}
 
 	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (fd < 0) {
-		g_spawn_command_line_async(exec, NULL);
-		return;
-	}
+	if (fd < 0) { g_spawn_command_line_async(exec, NULL); return; }
 
 	struct sockaddr_un addr = {0};
 	addr.sun_family = AF_UNIX;
@@ -168,8 +170,10 @@ static void ipc_launch(const char *exec) {
 typedef struct {
 	GtkWindow *window;
 	GtkWidget *search_entry;
-	GtkWidget *results_list;
-	GtkStringList *model;
+	GtkWidget *results_box;
+	GtkWidget *hint_label;
+	GtkWidget *count_label;
+	int selected_index;
 } LauncherState;
 
 static LauncherState launcher = {0};
@@ -179,66 +183,217 @@ static void launch_entry(DesktopEntry *entry) {
 	if (entry && entry->exec) {
 		ipc_launch(entry->exec);
 	}
-	/* Close the launcher */
 	gtk_window_close(launcher.window);
 }
 
-static void on_row_activated(GtkListView *list_view, guint position,
-		gpointer data) {
-	(void)list_view;
-	(void)data;
+/* ─── Fuzzy match scoring ──────────────────────────────────────── */
 
-	GList *item = g_list_nth(filtered_entries, position);
-	if (item) {
-		launch_entry(item->data);
+static int fuzzy_score(const char *haystack, const char *needle) {
+	if (!needle || !*needle) return 100;
+	if (!haystack) return 0;
+
+	char *h = g_utf8_strdown(haystack, -1);
+	char *n = g_utf8_strdown(needle, -1);
+	int score = 0;
+
+	/* Exact prefix match: highest */
+	if (g_str_has_prefix(h, n)) {
+		score = 100;
 	}
+	/* Contains substring */
+	else if (strstr(h, n)) {
+		score = 60;
+	}
+	/* Fuzzy: all chars present in order */
+	else {
+		const char *hp = h;
+		const char *np = n;
+		int matched = 0;
+		int total = (int)strlen(n);
+		while (*hp && *np) {
+			if (*hp == *np) {
+				np++;
+				matched++;
+			}
+			hp++;
+		}
+		if (matched == total) {
+			score = 30;
+		}
+	}
+
+	g_free(h);
+	g_free(n);
+	return score;
 }
 
-static gboolean match_entry(DesktopEntry *entry, const char *query) {
-	if (!query || !*query) return TRUE;
+/* ─── Result row builder ──────────────────────────────────────── */
 
-	char *name_lower = g_utf8_strdown(entry->name, -1);
-	char *query_lower = g_utf8_strdown(query, -1);
-	gboolean match = (strstr(name_lower, query_lower) != NULL);
+static GtkWidget *create_result_row(DesktopEntry *entry, int index,
+		gboolean selected) {
+	GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+	gtk_widget_add_css_class(row, "result-row");
+	if (selected) {
+		gtk_widget_add_css_class(row, "result-selected");
+	}
+	gtk_widget_set_margin_start(row, 8);
+	gtk_widget_set_margin_end(row, 8);
+	gtk_widget_set_margin_top(row, 2);
+	gtk_widget_set_margin_bottom(row, 2);
 
-	if (!match && entry->comment) {
-		char *comment_lower = g_utf8_strdown(entry->comment, -1);
-		match = (strstr(comment_lower, query_lower) != NULL);
-		g_free(comment_lower);
+	/* App icon */
+	GtkWidget *icon_widget;
+	if (entry->icon) {
+		GtkIconTheme *theme = gtk_icon_theme_get_for_display(
+			gdk_display_get_default());
+		GtkIconPaintable *paintable = gtk_icon_theme_lookup_icon(
+			theme, entry->icon, NULL, 32, 1,
+			GTK_TEXT_DIR_LTR, 0);
+		if (paintable) {
+			icon_widget = gtk_image_new_from_paintable(
+				GDK_PAINTABLE(paintable));
+			g_object_unref(paintable);
+		} else {
+			icon_widget = gtk_image_new_from_icon_name(
+				"application-x-executable");
+		}
+	} else {
+		icon_widget = gtk_image_new_from_icon_name(
+			"application-x-executable");
+	}
+	gtk_image_set_pixel_size(GTK_IMAGE(icon_widget), 32);
+	gtk_widget_add_css_class(icon_widget, "result-icon");
+	gtk_box_append(GTK_BOX(row), icon_widget);
+
+	/* Text column: name + description */
+	GtkWidget *text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
+	gtk_widget_set_hexpand(text_box, TRUE);
+	gtk_widget_set_valign(text_box, GTK_ALIGN_CENTER);
+
+	GtkWidget *name_label = gtk_label_new(entry->name);
+	gtk_widget_add_css_class(name_label, "result-name");
+	gtk_label_set_xalign(GTK_LABEL(name_label), 0.0);
+	gtk_label_set_ellipsize(GTK_LABEL(name_label), PANGO_ELLIPSIZE_END);
+	gtk_box_append(GTK_BOX(text_box), name_label);
+
+	/* Description: prefer comment, fall back to generic name */
+	const char *desc = entry->comment ? entry->comment :
+		entry->generic_name;
+	if (desc && *desc) {
+		GtkWidget *desc_label = gtk_label_new(desc);
+		gtk_widget_add_css_class(desc_label, "result-desc");
+		gtk_label_set_xalign(GTK_LABEL(desc_label), 0.0);
+		gtk_label_set_ellipsize(GTK_LABEL(desc_label),
+			PANGO_ELLIPSIZE_END);
+		gtk_box_append(GTK_BOX(text_box), desc_label);
 	}
 
-	if (!match && entry->desktop_id) {
-		char *id_lower = g_utf8_strdown(entry->desktop_id, -1);
-		match = (strstr(id_lower, query_lower) != NULL);
-		g_free(id_lower);
+	gtk_box_append(GTK_BOX(row), text_box);
+
+	/* Keyboard shortcut hint (for top results) */
+	if (index < 9) {
+		char hint[16];
+		/* Show as subtle keyboard shortcut */
+		snprintf(hint, sizeof(hint), "\342\206\265"); /* return symbol */
+		if (index == 0 && selected) {
+			GtkWidget *hint_label = gtk_label_new(hint);
+			gtk_widget_add_css_class(hint_label, "result-hint");
+			gtk_box_append(GTK_BOX(row), hint_label);
+		}
 	}
 
-	g_free(name_lower);
-	g_free(query_lower);
-	return match;
+	return row;
 }
+
+/* ─── Update results ───────────────────────────────────────────── */
 
 static void update_results(void) {
 	const char *query = gtk_editable_get_text(
 		GTK_EDITABLE(launcher.search_entry));
 
-	/* Clear model */
-	while (g_list_model_get_n_items(G_LIST_MODEL(launcher.model)) > 0) {
-		gtk_string_list_remove(launcher.model, 0);
+	/* Clear results */
+	GtkWidget *child;
+	while ((child = gtk_widget_get_first_child(launcher.results_box))) {
+		gtk_box_remove(GTK_BOX(launcher.results_box), child);
 	}
 
 	g_list_free(filtered_entries);
 	filtered_entries = NULL;
+	launcher.selected_index = 0;
 
-	int count = 0;
-	GList *l;
-	for (l = entries; l && count < 20; l = l->next) {
+	/* Score and filter entries */
+	typedef struct { DesktopEntry *entry; int score; } Scored;
+	GList *scored = NULL;
+
+	for (GList *l = entries; l; l = l->next) {
 		DesktopEntry *entry = l->data;
-		if (match_entry(entry, query)) {
-			gtk_string_list_append(launcher.model, entry->name);
-			filtered_entries = g_list_append(filtered_entries, entry);
-			count++;
+		int score = fuzzy_score(entry->name, query);
+
+		/* Also match against comment and desktop_id */
+		if (score < 30 && entry->comment) {
+			int cs = fuzzy_score(entry->comment, query);
+			if (cs > score) score = cs / 2; /* Discount */
 		}
+		if (score < 30 && entry->desktop_id) {
+			int ds = fuzzy_score(entry->desktop_id, query);
+			if (ds > score) score = ds / 2;
+		}
+
+		if (score > 0) {
+			Scored *s = g_new(Scored, 1);
+			s->entry = entry;
+			s->score = score;
+			scored = g_list_prepend(scored, s);
+		}
+	}
+
+	/* Sort by score descending */
+	scored = g_list_sort(scored, (GCompareFunc)(void *)(
+		int (*)(const void *, const void *))
+		+[](const Scored *a, const Scored *b) -> int {
+			return b->score - a->score;
+		});
+
+	/* Build result rows */
+	int count = 0;
+	for (GList *l = scored; l && count < 12; l = l->next) {
+		Scored *s = l->data;
+		filtered_entries = g_list_append(filtered_entries, s->entry);
+
+		GtkWidget *row = create_result_row(s->entry, count,
+			count == launcher.selected_index);
+
+		/* Click handler */
+		GtkGesture *click = gtk_gesture_click_new();
+		g_signal_connect_swapped(click, "pressed",
+			G_CALLBACK(launch_entry), s->entry);
+		gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(click));
+
+		gtk_box_append(GTK_BOX(launcher.results_box), row);
+		count++;
+	}
+
+	/* Free scored list */
+	g_list_free_full(scored, g_free);
+
+	/* Update count label */
+	char count_text[64];
+	snprintf(count_text, sizeof(count_text),
+		"%d result%s", count, count == 1 ? "" : "s");
+	gtk_label_set_text(GTK_LABEL(launcher.count_label), count_text);
+}
+
+static void update_selection(void) {
+	int i = 0;
+	GtkWidget *child = gtk_widget_get_first_child(launcher.results_box);
+	while (child) {
+		if (i == launcher.selected_index) {
+			gtk_widget_add_css_class(child, "result-selected");
+		} else {
+			gtk_widget_remove_css_class(child, "result-selected");
+		}
+		child = gtk_widget_get_next_sibling(child);
+		i++;
 	}
 }
 
@@ -251,10 +406,7 @@ static void on_search_changed(GtkSearchEntry *entry, gpointer data) {
 static gboolean on_key_pressed(GtkEventControllerKey *controller,
 		guint keyval, guint keycode, GdkModifierType state,
 		gpointer data) {
-	(void)controller;
-	(void)keycode;
-	(void)state;
-	(void)data;
+	(void)controller; (void)keycode; (void)state; (void)data;
 
 	if (keyval == GDK_KEY_Escape) {
 		gtk_window_close(launcher.window);
@@ -262,9 +414,32 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller,
 	}
 
 	if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) {
-		/* Launch first result */
-		if (filtered_entries) {
-			launch_entry(filtered_entries->data);
+		GList *item = g_list_nth(filtered_entries,
+			launcher.selected_index);
+		if (item) {
+			launch_entry(item->data);
+		}
+		return TRUE;
+	}
+
+	if (keyval == GDK_KEY_Down || keyval == GDK_KEY_Tab) {
+		int count = (int)g_list_length(filtered_entries);
+		if (count > 0) {
+			launcher.selected_index =
+				(launcher.selected_index + 1) % count;
+			update_selection();
+		}
+		return TRUE;
+	}
+
+	if (keyval == GDK_KEY_Up ||
+			(keyval == GDK_KEY_Tab &&
+			 (state & GDK_SHIFT_MASK))) {
+		int count = (int)g_list_length(filtered_entries);
+		if (count > 0) {
+			launcher.selected_index =
+				(launcher.selected_index - 1 + count) % count;
+			update_selection();
 		}
 		return TRUE;
 	}
@@ -275,31 +450,125 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller,
 /* ─── CSS ──────────────────────────────────────────────────────── */
 
 static const char *launcher_css =
+	/* ── Background overlay ──────────────────────────────────── */
 	"window {"
-	"  background-color: rgba(26, 27, 38, 0.95);"
-	"  color: #c0caf5;"
-	"  font-family: monospace;"
+	"  background-color: rgba(15, 15, 22, 0.75);"
 	"}"
+
+	/* ── Main card ───────────────────────────────────────────── */
+	".launcher-card {"
+	"  background-color: rgba(26, 27, 38, 0.97);"
+	"  border: 1px solid rgba(122, 162, 247, 0.2);"
+	"  border-radius: 16px;"
+	"  margin: 0;"
+	"  padding: 4px;"
+	"}"
+
+	/* ── Search bar ──────────────────────────────────────────── */
 	".launcher-search {"
-	"  font-size: 18px;"
-	"  padding: 12px;"
-	"  background-color: #24283b;"
+	"  font-size: 20px;"
+	"  padding: 14px 18px;"
+	"  background-color: rgba(36, 40, 59, 0.8);"
 	"  color: #c0caf5;"
-	"  border: 2px solid #7aa2f7;"
-	"  border-radius: 8px;"
-	"  margin: 8px;"
+	"  border: 2px solid rgba(122, 162, 247, 0.3);"
+	"  border-radius: 12px;"
+	"  margin: 12px 12px 8px 12px;"
+	"  font-family: 'Inter', 'Cantarell', sans-serif;"
+	"  font-weight: 400;"
+	"  transition: border-color 200ms ease;"
+	"  caret-color: #7aa2f7;"
 	"}"
-	".launcher-list {"
-	"  background-color: transparent;"
+	".launcher-search:focus {"
+	"  border-color: rgba(122, 162, 247, 0.6);"
+	"  outline: none;"
 	"}"
-	".launcher-list row {"
+	/* Search icon styling */
+	".launcher-search image {"
+	"  color: rgba(122, 162, 247, 0.5);"
+	"  -gtk-icon-size: 18px;"
+	"}"
+
+	/* ── Result rows ─────────────────────────────────────────── */
+	".result-row {"
 	"  padding: 8px 12px;"
-	"  border-radius: 4px;"
-	"  margin: 1px 8px;"
+	"  border-radius: 10px;"
+	"  transition: background-color 150ms ease;"
 	"}"
-	".launcher-list row:selected {"
-	"  background-color: #7aa2f7;"
-	"  color: #1a1b26;"
+	".result-row:hover {"
+	"  background-color: rgba(52, 59, 88, 0.5);"
+	"}"
+	".result-selected {"
+	"  background-color: rgba(122, 162, 247, 0.15);"
+	"  border: 1px solid rgba(122, 162, 247, 0.25);"
+	"}"
+	".result-selected:hover {"
+	"  background-color: rgba(122, 162, 247, 0.2);"
+	"}"
+
+	/* ── Result icon ─────────────────────────────────────────── */
+	".result-icon {"
+	"  margin-right: 4px;"
+	"  opacity: 0.9;"
+	"}"
+	".result-selected .result-icon {"
+	"  opacity: 1.0;"
+	"}"
+
+	/* ── Result text ─────────────────────────────────────────── */
+	".result-name {"
+	"  font-size: 14px;"
+	"  font-weight: 500;"
+	"  color: #c0caf5;"
+	"  font-family: 'Inter', 'Cantarell', sans-serif;"
+	"}"
+	".result-selected .result-name {"
+	"  color: #e0e8ff;"
+	"  font-weight: 600;"
+	"}"
+	".result-desc {"
+	"  font-size: 11.5px;"
+	"  color: rgba(169, 177, 214, 0.5);"
+	"  font-family: 'Inter', 'Cantarell', sans-serif;"
+	"  margin-top: 1px;"
+	"}"
+	".result-selected .result-desc {"
+	"  color: rgba(169, 177, 214, 0.7);"
+	"}"
+
+	/* ── Shortcut hint ───────────────────────────────────────── */
+	".result-hint {"
+	"  font-size: 12px;"
+	"  color: rgba(122, 162, 247, 0.4);"
+	"  font-family: 'JetBrains Mono', monospace;"
+	"  padding: 2px 8px;"
+	"  border-radius: 4px;"
+	"  background-color: rgba(122, 162, 247, 0.08);"
+	"}"
+
+	/* ── Footer ──────────────────────────────────────────────── */
+	".launcher-footer {"
+	"  padding: 6px 16px;"
+	"  margin-top: 4px;"
+	"  border-top: 1px solid rgba(86, 95, 137, 0.2);"
+	"}"
+	".result-count {"
+	"  font-size: 11px;"
+	"  color: rgba(86, 95, 137, 0.6);"
+	"  font-family: 'Inter', 'Cantarell', sans-serif;"
+	"}"
+	".hint-text {"
+	"  font-size: 11px;"
+	"  color: rgba(86, 95, 137, 0.4);"
+	"  font-family: 'Inter', 'Cantarell', sans-serif;"
+	"}"
+	".hint-key {"
+	"  font-size: 10px;"
+	"  font-family: 'JetBrains Mono', monospace;"
+	"  background-color: rgba(36, 40, 59, 0.8);"
+	"  border: 1px solid rgba(86, 95, 137, 0.3);"
+	"  border-radius: 3px;"
+	"  padding: 1px 5px;"
+	"  color: rgba(169, 177, 214, 0.6);"
 	"}";
 
 /* ─── Activation ───────────────────────────────────────────────── */
@@ -307,7 +576,6 @@ static const char *launcher_css =
 static void activate(GtkApplication *app, gpointer data) {
 	(void)data;
 
-	/* Load CSS */
 	GtkCssProvider *css = gtk_css_provider_new();
 	gtk_css_provider_load_from_string(css, launcher_css);
 	gtk_style_context_add_provider_for_display(
@@ -315,80 +583,109 @@ static void activate(GtkApplication *app, gpointer data) {
 		GTK_STYLE_PROVIDER(css),
 		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
-	/* Load desktop entries */
 	load_all_entries();
 
-	/* Create window */
+	/* Window (full screen overlay) */
 	launcher.window = GTK_WINDOW(gtk_application_window_new(app));
 	gtk_window_set_title(launcher.window, "stw-launcher");
-	gtk_window_set_default_size(launcher.window, 500, 400);
+	gtk_window_set_default_size(launcher.window, 560, 500);
 
-	/* Layer shell setup */
 	gtk_layer_init_for_window(launcher.window);
 	gtk_layer_set_layer(launcher.window, GTK_LAYER_SHELL_LAYER_OVERLAY);
+	gtk_layer_set_anchor(launcher.window, GTK_LAYER_SHELL_EDGE_TOP, TRUE);
+	gtk_layer_set_anchor(launcher.window, GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
+	gtk_layer_set_anchor(launcher.window, GTK_LAYER_SHELL_EDGE_LEFT, TRUE);
+	gtk_layer_set_anchor(launcher.window, GTK_LAYER_SHELL_EDGE_RIGHT, TRUE);
 	gtk_layer_set_keyboard_mode(launcher.window,
 		GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
 	gtk_layer_set_namespace(launcher.window, "stw-launcher");
 
-	/* Key handler for Escape */
-	GtkEventController *key_ctrl =
-		gtk_event_controller_key_new();
+	/* Click on background to dismiss */
+	GtkGesture *bg_click = gtk_gesture_click_new();
+	g_signal_connect_swapped(bg_click, "pressed",
+		G_CALLBACK(gtk_window_close), launcher.window);
+	gtk_widget_add_controller(GTK_WIDGET(launcher.window),
+		GTK_EVENT_CONTROLLER(bg_click));
+
+	GtkEventController *key_ctrl = gtk_event_controller_key_new();
 	g_signal_connect(key_ctrl, "key-pressed",
 		G_CALLBACK(on_key_pressed), NULL);
 	gtk_widget_add_controller(GTK_WIDGET(launcher.window), key_ctrl);
 
-	/* Main layout */
-	GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	/* Centered card container */
+	GtkWidget *center = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	gtk_widget_set_halign(center, GTK_ALIGN_CENTER);
+	gtk_widget_set_valign(center, GTK_ALIGN_CENTER);
+	gtk_widget_set_size_request(center, 560, -1);
 
-	/* Search entry */
+	/* Card */
+	GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	gtk_widget_add_css_class(card, "launcher-card");
+
+	/* Search */
 	launcher.search_entry = gtk_search_entry_new();
 	gtk_widget_add_css_class(launcher.search_entry, "launcher-search");
 	g_signal_connect(launcher.search_entry, "search-changed",
 		G_CALLBACK(on_search_changed), NULL);
-	gtk_box_append(GTK_BOX(vbox), launcher.search_entry);
+	gtk_box_append(GTK_BOX(card), launcher.search_entry);
 
-	/* Results list */
-	launcher.model = gtk_string_list_new(NULL);
-
-	GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
-	g_signal_connect(factory, "setup", G_CALLBACK(
-		+[](GtkSignalListItemFactory *f, GtkListItem *item, gpointer d) {
-			(void)f; (void)d;
-			GtkWidget *label = gtk_label_new("");
-			gtk_label_set_xalign(GTK_LABEL(label), 0.0);
-			gtk_list_item_set_child(item, label);
-		}), NULL);
-	g_signal_connect(factory, "bind", G_CALLBACK(
-		+[](GtkSignalListItemFactory *f, GtkListItem *item, gpointer d) {
-			(void)f; (void)d;
-			GtkWidget *label = gtk_list_item_get_child(item);
-			GtkStringObject *obj = gtk_list_item_get_item(item);
-			gtk_label_set_text(GTK_LABEL(label),
-				gtk_string_object_get_string(obj));
-		}), NULL);
-
-	GtkNoSelection *selection = gtk_no_selection_new(
-		G_LIST_MODEL(launcher.model));
-	launcher.results_list = gtk_list_view_new(
-		GTK_SELECTION_MODEL(selection), factory);
-	gtk_widget_add_css_class(launcher.results_list, "launcher-list");
-	g_signal_connect(launcher.results_list, "activate",
-		G_CALLBACK(on_row_activated), NULL);
+	/* Results */
+	launcher.results_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	gtk_widget_set_margin_start(launcher.results_box, 4);
+	gtk_widget_set_margin_end(launcher.results_box, 4);
 
 	GtkWidget *scroll = gtk_scrolled_window_new();
+	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+		GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
 	gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll),
-		launcher.results_list);
+		launcher.results_box);
 	gtk_widget_set_vexpand(scroll, TRUE);
-	gtk_box_append(GTK_BOX(vbox), scroll);
+	gtk_widget_set_size_request(scroll, -1, 380);
+	gtk_box_append(GTK_BOX(card), scroll);
 
-	gtk_window_set_child(launcher.window, vbox);
+	/* Footer: result count + hints */
+	GtkWidget *footer = gtk_center_box_new();
+	gtk_widget_add_css_class(footer, "launcher-footer");
+
+	launcher.count_label = gtk_label_new("");
+	gtk_widget_add_css_class(launcher.count_label, "result-count");
+	gtk_center_box_set_start_widget(GTK_CENTER_BOX(footer),
+		launcher.count_label);
+
+	/* Keyboard hints */
+	GtkWidget *hints = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+
+	GtkWidget *esc_key = gtk_label_new("Esc");
+	gtk_widget_add_css_class(esc_key, "hint-key");
+	gtk_box_append(GTK_BOX(hints), esc_key);
+	GtkWidget *esc_text = gtk_label_new("close");
+	gtk_widget_add_css_class(esc_text, "hint-text");
+	gtk_box_append(GTK_BOX(hints), esc_text);
+
+	GtkWidget *enter_key = gtk_label_new("\342\206\265");
+	gtk_widget_add_css_class(enter_key, "hint-key");
+	gtk_box_append(GTK_BOX(hints), enter_key);
+	GtkWidget *enter_text = gtk_label_new("launch");
+	gtk_widget_add_css_class(enter_text, "hint-text");
+	gtk_box_append(GTK_BOX(hints), enter_text);
+
+	GtkWidget *arrow_key = gtk_label_new("\342\206\221\342\206\223");
+	gtk_widget_add_css_class(arrow_key, "hint-key");
+	gtk_box_append(GTK_BOX(hints), arrow_key);
+	GtkWidget *arrow_text = gtk_label_new("navigate");
+	gtk_widget_add_css_class(arrow_text, "hint-text");
+	gtk_box_append(GTK_BOX(hints), arrow_text);
+
+	gtk_center_box_set_end_widget(GTK_CENTER_BOX(footer), hints);
+
+	gtk_box_append(GTK_BOX(card), footer);
+
+	gtk_box_append(GTK_BOX(center), card);
+	gtk_window_set_child(launcher.window, center);
 
 	/* Initial results */
 	update_results();
-
-	/* Focus search entry */
 	gtk_widget_grab_focus(launcher.search_entry);
-
 	gtk_window_present(launcher.window);
 }
 

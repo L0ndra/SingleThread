@@ -16,6 +16,94 @@
 #include "task.h"
 #include "layout.h"
 #include "rules.h"
+#include "stw_config.h"
+
+/* ─── Border decoration helpers ────────────────────────────────── */
+
+static void view_create_borders(struct stw_view *view) {
+	struct stw_server *server = view->server;
+	int bw = server->config ? server->config->appearance.border_width : 2;
+	if (bw <= 0) return;
+
+	float color[4];
+	uint32_t c = server->config ?
+		server->config->appearance.border_unfocused : 0x565f89ff;
+	color[0] = ((c >> 24) & 0xff) / 255.0f;
+	color[1] = ((c >> 16) & 0xff) / 255.0f;
+	color[2] = ((c >> 8) & 0xff) / 255.0f;
+	color[3] = (c & 0xff) / 255.0f;
+
+	/* Create border rects as children of the view's scene tree */
+	/* 0=top, 1=bottom, 2=left, 3=right */
+	for (int i = 0; i < 4; i++) {
+		view->border[i] = wlr_scene_rect_create(
+			view->scene_tree, 0, 0, color);
+	}
+}
+
+static void view_update_borders(struct stw_view *view) {
+	int bw = view->server->config ?
+		view->server->config->appearance.border_width : 2;
+	if (bw <= 0) return;
+
+	struct wlr_box geo;
+	stw_view_get_geometry(view, &geo);
+	int w = geo.width;
+	int h = geo.height;
+
+	if (!view->border[0]) return;
+
+	/* Top border: full width above the surface */
+	wlr_scene_node_set_position(&view->border[0]->node, -bw, -bw);
+	wlr_scene_rect_set_size(view->border[0], w + 2 * bw, bw);
+
+	/* Bottom border: full width below the surface */
+	wlr_scene_node_set_position(&view->border[1]->node, -bw, h);
+	wlr_scene_rect_set_size(view->border[1], w + 2 * bw, bw);
+
+	/* Left border: between top and bottom */
+	wlr_scene_node_set_position(&view->border[2]->node, -bw, 0);
+	wlr_scene_rect_set_size(view->border[2], bw, h);
+
+	/* Right border: between top and bottom */
+	wlr_scene_node_set_position(&view->border[3]->node, w, 0);
+	wlr_scene_rect_set_size(view->border[3], bw, h);
+}
+
+void stw_view_update_border_color(struct stw_view *view, bool focused) {
+	if (!view->border[0]) return;
+
+	struct stw_server *server = view->server;
+	uint32_t c;
+
+	if (focused) {
+		c = server->config ?
+			server->config->appearance.border_focused : 0x7aa2f7ff;
+	} else {
+		c = server->config ?
+			server->config->appearance.border_unfocused : 0x565f89ff;
+	}
+
+	float color[4] = {
+		((c >> 24) & 0xff) / 255.0f,
+		((c >> 16) & 0xff) / 255.0f,
+		((c >> 8) & 0xff) / 255.0f,
+		(c & 0xff) / 255.0f,
+	};
+
+	for (int i = 0; i < 4; i++) {
+		wlr_scene_rect_set_color(view->border[i], color);
+	}
+}
+
+static void view_destroy_borders(struct stw_view *view) {
+	for (int i = 0; i < 4; i++) {
+		if (view->border[i]) {
+			wlr_scene_node_destroy(&view->border[i]->node);
+			view->border[i] = NULL;
+		}
+	}
+}
 
 /* ─── Internal listener callbacks (declared for server.c) ──────── */
 
@@ -35,6 +123,9 @@ void stw_view_handle_map(struct wl_listener *listener, void *data) {
 		view->title = view->xdg_toplevel->title ?
 			strdup(view->xdg_toplevel->title) : NULL;
 	}
+
+	/* Create border decorations */
+	view_create_borders(view);
 
 	/* Try to resolve parent for transient windows (TASK-4) */
 	if (view->type == STW_VIEW_XDG_TOPLEVEL &&
@@ -94,6 +185,9 @@ void stw_view_handle_unmap(struct wl_listener *listener, void *data) {
 
 	view->mapped = false;
 
+	/* Remove border decorations */
+	view_destroy_borders(view);
+
 	/* Update task's last focused if this was it */
 	if (view->task && view->task->last_focused == view) {
 		view->task->last_focused = NULL;
@@ -119,12 +213,16 @@ void stw_view_handle_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&view->map.link);
 	wl_list_remove(&view->unmap.link);
 	wl_list_remove(&view->destroy.link);
+	wl_list_remove(&view->commit.link);
 	wl_list_remove(&view->request_move.link);
 	wl_list_remove(&view->request_resize.link);
 	wl_list_remove(&view->request_maximize.link);
 	wl_list_remove(&view->request_fullscreen.link);
 	wl_list_remove(&view->set_title.link);
 	wl_list_remove(&view->set_app_id.link);
+
+	/* Destroy border decorations */
+	view_destroy_borders(view);
 
 	/* Remove from task */
 	if (view->task) {
@@ -212,6 +310,15 @@ void stw_view_handle_set_app_id(struct wl_listener *listener, void *data) {
 		view->app_id = strdup(view->xdg_toplevel->app_id);
 	} else {
 		view->app_id = NULL;
+	}
+}
+
+void stw_view_handle_commit(struct wl_listener *listener, void *data) {
+	struct stw_view *view = wl_container_of(listener, view, commit);
+	(void)data;
+	/* Update border positions after surface commit (new geometry) */
+	if (view->mapped && view->border[0]) {
+		view_update_borders(view);
 	}
 }
 
@@ -438,6 +545,11 @@ void stw_view_set_size(struct stw_view *view, int width, int height) {
 			width, height);
 		break;
 #endif
+	}
+
+	/* Update border positions after resize */
+	if (view->mapped && view->border[0]) {
+		view_update_borders(view);
 	}
 }
 
