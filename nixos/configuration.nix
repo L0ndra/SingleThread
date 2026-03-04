@@ -36,18 +36,27 @@
     gdb
     valgrind
 
-    # SingleThread build dependencies
+    # SingleThread build dependencies (include .dev outputs for headers/pkg-config)
     wayland
+    wayland.dev
     wayland-protocols
     wayland-scanner
     wlroots_0_18
+    wlroots_0_18.dev
     libinput
+    libinput.dev
     libxkbcommon
+    libxkbcommon.dev
     pixman
+    pixman.dev
     json_c
+    json_c.dev
     gtk4
+    gtk4.dev
     gtk4-layer-shell
+    gtk4-layer-shell.dev
     xorg.libxcb
+    xorg.libxcb.dev
 
     # Wayland utilities
     wl-clipboard
