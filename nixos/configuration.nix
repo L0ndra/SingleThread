@@ -64,7 +64,7 @@
     inter
     jetbrains-mono
     noto-fonts
-    noto-fonts-emoji
+    noto-fonts-color-emoji
     font-awesome
   ];
   fonts.fontconfig.defaultFonts = {
