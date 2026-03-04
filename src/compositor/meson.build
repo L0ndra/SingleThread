@@ -12,6 +12,7 @@ compositor_sources = [
   'ipc.c',
   'session.c',
   'xwayland.c',
+  'focus_mode.c',
 ]
 
 compositor_deps = [

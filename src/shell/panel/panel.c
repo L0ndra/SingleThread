@@ -59,6 +59,18 @@ static char *ipc_request(const char *json_str) {
 
 /* ─── Panel state ──────────────────────────────────────────────── */
 
+/* ─── Duration formatting helper ───────────────────────────────── */
+
+static void format_duration(uint64_t total_secs, char *buf, size_t len) {
+	int hours = total_secs / 3600;
+	int mins = (total_secs % 3600) / 60;
+	if (hours > 0) {
+		snprintf(buf, len, "%dh %dm", hours, mins);
+	} else {
+		snprintf(buf, len, "%dm", mins);
+	}
+}
+
 typedef struct {
 	GtkWindow *window;
 
@@ -67,12 +79,13 @@ typedef struct {
 	GtkWidget *task_box;
 
 	/* Center section */
-	GtkWidget *title_icon;
 	GtkWidget *title_label;
+	GtkWidget *timer_label;
 
 	/* Right section */
+	GtkWidget *focus_indicator;
+	GtkWidget *break_label;
 	GtkWidget *workspace_box;
-	GtkWidget *separator_tray;
 	GtkWidget *tray_box;
 	GtkWidget *date_label;
 	GtkWidget *clock_label;
@@ -116,13 +129,15 @@ static void update_tasks(void) {
 	for (int i = 0; i < len; i++) {
 		struct json_object *task = json_object_array_get_idx(tasks_arr, i);
 		struct json_object *name_obj, *id_obj, *active_obj,
-			*archived_obj, *wcount_obj;
+			*archived_obj, *wcount_obj, *accent_obj, *timer_obj;
 
 		json_object_object_get_ex(task, "name", &name_obj);
 		json_object_object_get_ex(task, "id", &id_obj);
 		json_object_object_get_ex(task, "active", &active_obj);
 		json_object_object_get_ex(task, "archived", &archived_obj);
 		json_object_object_get_ex(task, "window_count", &wcount_obj);
+		json_object_object_get_ex(task, "accent_color", &accent_obj);
+		json_object_object_get_ex(task, "timer_seconds", &timer_obj);
 
 		if (archived_obj && json_object_get_boolean(archived_obj))
 			continue;
@@ -133,10 +148,31 @@ static void update_tasks(void) {
 		int wcount = wcount_obj ? json_object_get_int(wcount_obj) : 0;
 		gboolean active = active_obj ?
 			json_object_get_boolean(active_obj) : FALSE;
+		const char *accent = accent_obj ?
+			json_object_get_string(accent_obj) : "#7aa2f7";
+		uint64_t timer_secs = timer_obj ?
+			(uint64_t)json_object_get_int64(timer_obj) : 0;
 
-		/* Build task pill: [number icon] name [window count badge] */
+		/* Build task pill with accent color dot */
 		GtkWidget *btn = gtk_button_new();
 		GtkWidget *btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+
+		/* Per-task accent color dot */
+		GtkWidget *accent_dot = gtk_label_new("\342\227\217");
+		char dot_id[64];
+		snprintf(dot_id, sizeof(dot_id), "task-dot-%d", task_num);
+		gtk_widget_set_name(accent_dot, dot_id);
+		GtkCssProvider *dot_css = gtk_css_provider_new();
+		char css_buf[256];
+		snprintf(css_buf, sizeof(css_buf),
+			"#%s { color: %s; font-size: 8px; }", dot_id, accent);
+		gtk_css_provider_load_from_string(dot_css, css_buf);
+		gtk_style_context_add_provider_for_display(
+			gdk_display_get_default(),
+			GTK_STYLE_PROVIDER(dot_css),
+			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + task_num);
+		g_object_unref(dot_css);
+		gtk_box_append(GTK_BOX(btn_box), accent_dot);
 
 		/* Keyboard shortcut number */
 		char num_str[8];
@@ -149,6 +185,15 @@ static void update_tasks(void) {
 		GtkWidget *name_label = gtk_label_new(name);
 		gtk_widget_add_css_class(name_label, "task-name-label");
 		gtk_box_append(GTK_BOX(btn_box), name_label);
+
+		/* Task timer badge for active task (show if > 1 min) */
+		if (active && timer_secs > 60) {
+			char timer_str[32];
+			format_duration(timer_secs, timer_str, sizeof(timer_str));
+			GtkWidget *timer_badge = gtk_label_new(timer_str);
+			gtk_widget_add_css_class(timer_badge, "task-timer-badge");
+			gtk_box_append(GTK_BOX(btn_box), timer_badge);
+		}
 
 		/* Window count badge (only if > 0) */
 		if (wcount > 0) {
@@ -298,11 +343,97 @@ static void build_tray(void) {
 
 /* ─── Periodic refresh ─────────────────────────────────────────── */
 
+/* ─── Focus mode indicator ─────────────────────────────────────── */
+
+static void update_focus_mode(void) {
+	char *resp = ipc_request("{\"command\": \"get/focus-mode\"}");
+	if (!resp) {
+		gtk_widget_set_visible(panel.focus_indicator, FALSE);
+		gtk_widget_set_visible(panel.break_label, FALSE);
+		return;
+	}
+
+	struct json_object *root = json_tokener_parse(resp);
+	free(resp);
+	if (!root) {
+		gtk_widget_set_visible(panel.focus_indicator, FALSE);
+		gtk_widget_set_visible(panel.break_label, FALSE);
+		return;
+	}
+
+	struct json_object *active_obj, *on_break_obj, *elapsed_obj;
+	json_object_object_get_ex(root, "active", &active_obj);
+	json_object_object_get_ex(root, "on_break", &on_break_obj);
+	json_object_object_get_ex(root, "elapsed_minutes", &elapsed_obj);
+
+	gboolean fm_active = active_obj ?
+		json_object_get_boolean(active_obj) : FALSE;
+	gboolean on_break = on_break_obj ?
+		json_object_get_boolean(on_break_obj) : FALSE;
+
+	if (fm_active) {
+		int elapsed = elapsed_obj ? json_object_get_int(elapsed_obj) : 0;
+		char focus_text[64];
+		snprintf(focus_text, sizeof(focus_text),
+			"\342\227\211 Focus %dm", elapsed);
+		gtk_label_set_text(GTK_LABEL(panel.focus_indicator), focus_text);
+		gtk_widget_set_visible(panel.focus_indicator, TRUE);
+
+		if (on_break) {
+			gtk_label_set_text(GTK_LABEL(panel.break_label),
+				"\342\230\225 Break!");
+			gtk_widget_set_visible(panel.break_label, TRUE);
+		} else {
+			gtk_widget_set_visible(panel.break_label, FALSE);
+		}
+	} else {
+		gtk_widget_set_visible(panel.focus_indicator, FALSE);
+		gtk_widget_set_visible(panel.break_label, FALSE);
+	}
+
+	json_object_put(root);
+}
+
+/* ─── Task timer in center ─────────────────────────────────────── */
+
+static void update_task_timer(void) {
+	char *resp = ipc_request("{\"command\": \"get/active-task\"}");
+	if (!resp) {
+		gtk_label_set_text(GTK_LABEL(panel.timer_label), "");
+		return;
+	}
+
+	struct json_object *root = json_tokener_parse(resp);
+	free(resp);
+	if (!root) return;
+
+	struct json_object *task_obj;
+	if (json_object_object_get_ex(root, "task", &task_obj)) {
+		struct json_object *timer_obj;
+		if (json_object_object_get_ex(task_obj, "timer_seconds",
+				&timer_obj)) {
+			uint64_t secs = (uint64_t)json_object_get_int64(timer_obj);
+			if (secs > 60) {
+				char timer_str[32];
+				format_duration(secs, timer_str, sizeof(timer_str));
+				gtk_label_set_text(GTK_LABEL(panel.timer_label),
+					timer_str);
+			} else {
+				gtk_label_set_text(GTK_LABEL(panel.timer_label), "");
+			}
+		}
+	}
+
+	json_object_put(root);
+}
+
 static gboolean refresh_panel(gpointer data) {
 	(void)data;
 	update_tasks();
 	update_title();
 	update_workspaces();
+	update_focus_mode();
+	update_task_timer();
 	return G_SOURCE_CONTINUE;
 }
 
@@ -379,6 +510,42 @@ static const char *panel_css =
 	"  padding: 0 5px;"
 	"  min-height: 14px;"
 	"  font-family: 'JetBrains Mono', 'Fira Code', monospace;"
+	"}"
+
+	/* ── Task timer badge ────────────────────────────────────── */
+	".task-timer-badge {"
+	"  font-size: 9px;"
+	"  font-weight: 600;"
+	"  background-color: rgba(158, 206, 106, 0.15);"
+	"  color: #9ece6a;"
+	"  border-radius: 6px;"
+	"  padding: 0 5px;"
+	"  min-height: 14px;"
+	"  font-family: 'JetBrains Mono', 'Fira Code', monospace;"
+	"}"
+
+	/* ── Center timer ────────────────────────────────────────── */
+	".center-timer {"
+	"  font-size: 11px;"
+	"  font-weight: 600;"
+	"  color: rgba(158, 206, 106, 0.7);"
+	"  padding: 0 6px;"
+	"  font-family: 'JetBrains Mono', 'Fira Code', monospace;"
+	"}"
+
+	/* ── Focus mode indicator ────────────────────────────────── */
+	".focus-indicator {"
+	"  font-size: 11px;"
+	"  font-weight: 700;"
+	"  color: #e0af68;"
+	"  padding: 0 8px;"
+	"  letter-spacing: 0.3px;"
+	"}"
+	".break-indicator {"
+	"  font-size: 11px;"
+	"  font-weight: 700;"
+	"  color: #f7768e;"
+	"  padding: 0 6px;"
 	"}"
 
 	/* ── Separators ──────────────────────────────────────────── */
@@ -496,8 +663,8 @@ static void activate(GtkApplication *app, gpointer data) {
 
 	gtk_center_box_set_start_widget(GTK_CENTER_BOX(main_box), left_box);
 
-	/* ─── CENTER: Window title ─────────────────────────────── */
-	GtkWidget *center_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+	/* ─── CENTER: Title + Task Timer ──────────────────────── */
+	GtkWidget *center_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
 	gtk_widget_set_valign(center_box, GTK_ALIGN_CENTER);
 	gtk_widget_set_halign(center_box, GTK_ALIGN_CENTER);
 
@@ -506,14 +673,30 @@ static void activate(GtkApplication *app, gpointer data) {
 	gtk_widget_add_css_class(panel.title_label, "title-placeholder");
 	gtk_label_set_ellipsize(GTK_LABEL(panel.title_label),
 		PANGO_ELLIPSIZE_END);
-	gtk_label_set_max_width_chars(GTK_LABEL(panel.title_label), 50);
+	gtk_label_set_max_width_chars(GTK_LABEL(panel.title_label), 40);
 	gtk_box_append(GTK_BOX(center_box), panel.title_label);
+
+	panel.timer_label = gtk_label_new("");
+	gtk_widget_add_css_class(panel.timer_label, "center-timer");
+	gtk_box_append(GTK_BOX(center_box), panel.timer_label);
 
 	gtk_center_box_set_center_widget(GTK_CENTER_BOX(main_box), center_box);
 
-	/* ─── RIGHT: Workspaces + Tray + Clock ─────────────────── */
+	/* ─── RIGHT: Focus + Workspaces + Tray + Clock ────────── */
 	GtkWidget *right_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 	gtk_widget_set_valign(right_box, GTK_ALIGN_CENTER);
+
+	/* Focus mode indicator (hidden by default) */
+	panel.focus_indicator = gtk_label_new("");
+	gtk_widget_add_css_class(panel.focus_indicator, "focus-indicator");
+	gtk_widget_set_visible(panel.focus_indicator, FALSE);
+	gtk_box_append(GTK_BOX(right_box), panel.focus_indicator);
+
+	/* Break reminder indicator (hidden by default) */
+	panel.break_label = gtk_label_new("");
+	gtk_widget_add_css_class(panel.break_label, "break-indicator");
+	gtk_widget_set_visible(panel.break_label, FALSE);
+	gtk_box_append(GTK_BOX(right_box), panel.break_label);
 
 	/* Workspace indicator dots */
 	panel.workspace_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
@@ -555,6 +738,8 @@ static void activate(GtkApplication *app, gpointer data) {
 	update_tasks();
 	update_title();
 	update_workspaces();
+	update_focus_mode();
+	update_task_timer();
 	update_clock(NULL);
 
 	/* Timers */

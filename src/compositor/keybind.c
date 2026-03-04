@@ -15,6 +15,7 @@
 #include "task.h"
 #include "layout.h"
 #include "stw_config.h"
+#include "focus_mode.h"
 
 /* ─── Spawn helper ─────────────────────────────────────────────── */
 
@@ -232,12 +233,42 @@ bool stw_keybind_execute(struct stw_server *server, const char *action) {
 	}
 
 	/* ─── Shell actions ────────────────────────────────────────── */
-	if (strcmp(action, "launcher:open") == 0 ||
-			strcmp(action, "switcher:open") == 0 ||
-			strcmp(action, "overview:open") == 0) {
-		/* These will be handled by sending IPC to shell components */
-		/* For now, log it */
-		wlr_log(WLR_DEBUG, "Shell action: %s (TODO)", action);
+	if (strcmp(action, "launcher:open") == 0) {
+		stw_spawn("stw-launcher");
+		return true;
+	}
+	if (strcmp(action, "switcher:open") == 0) {
+		stw_spawn("stw-switcher");
+		return true;
+	}
+	if (strcmp(action, "quicknote:open") == 0) {
+		stw_spawn("stw-quicknote");
+		return true;
+	}
+
+	/* ─── Focus mode actions (ADHD-friendly) ───────────────────── */
+	if (strcmp(action, "focus:toggle") == 0) {
+		stw_focus_mode_toggle(server);
+		return true;
+	}
+	if (strcmp(action, "focus:start") == 0) {
+		stw_focus_mode_start(server, 0);
+		return true;
+	}
+	if (strcmp(action, "focus:stop") == 0) {
+		stw_focus_mode_stop(server);
+		return true;
+	}
+	/* focus:start:N (start focus mode for N minutes) */
+	if (strncmp(action, "focus:start:", 12) == 0) {
+		int mins = atoi(action + 12);
+		if (mins > 0) {
+			stw_focus_mode_start(server, mins);
+		}
+		return true;
+	}
+	if (strcmp(action, "focus:dismiss-break") == 0) {
+		stw_focus_mode_dismiss_break(server);
 		return true;
 	}
 

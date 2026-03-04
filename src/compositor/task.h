@@ -7,10 +7,12 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 #include <wayland-server-core.h>
 
 struct stw_server;
 struct stw_view;
+struct stw_task_timer;
 
 /* ─── Workspace (sub-container within a task) ──────────────────── */
 #define STW_MAX_WORKSPACES 10
@@ -65,6 +67,21 @@ struct stw_task {
 
 	/* Layout preference override (NULL = use global default) */
 	char *layout_name;
+
+	/* ─── ADHD-friendly features ──────────────────────────────── */
+
+	/* Per-task accent color (auto-assigned from palette, RGBA) */
+	uint32_t accent_color;
+
+	/* Task timer - tracks cumulative time on this task */
+	time_t timer_switch_in;    /* when we last switched TO this task */
+	uint64_t timer_total_secs; /* cumulative seconds spent */
+
+	/* Quick notes attached to this task */
+	struct wl_list notes;      /* stw_quick_note.link */
+
+	/* "What was I doing?" reminder text */
+	char *sticky_note;
 };
 
 /* Task lifecycle */
@@ -100,5 +117,12 @@ struct stw_task *stw_task_find_by_id(struct stw_server *server, uint32_t id);
 struct stw_task *stw_task_find_by_name(struct stw_server *server, const char *name);
 int stw_task_count_views(struct stw_task *task);
 int stw_task_get_index(struct stw_task *task);
+
+/* ADHD-friendly: task timer */
+uint64_t stw_task_get_timer_seconds(struct stw_task *task);
+
+/* ADHD-friendly: quick notes */
+void stw_task_add_note(struct stw_task *task, const char *text);
+void stw_task_set_sticky(struct stw_task *task, const char *text);
 
 #endif /* STW_TASK_H */

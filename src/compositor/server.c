@@ -37,6 +37,7 @@
 #include "ipc.h"
 #include "session.h"
 #include "stw_config.h"
+#include "focus_mode.h"
 
 /* ─── XDG shell handlers ──────────────────────────────────────── */
 
@@ -334,6 +335,9 @@ bool stw_server_init(struct stw_server *server) {
 	stw_rules_init(server);
 	stw_rules_load(server);
 
+	/* Initialize ADHD-friendly features */
+	stw_focus_mode_init(server);
+
 	/* Initialize IPC */
 	wl_list_init(&server->ipc_clients);
 	if (!stw_ipc_init(server)) {
@@ -428,6 +432,9 @@ void stw_server_finish(struct stw_server *server) {
 	/* Save session before shutdown */
 	stw_session_save(server);
 	stw_session_stop_autosave(server);
+
+	/* Clean up focus mode */
+	stw_focus_mode_finish(server);
 
 	/* Clean up IPC */
 	stw_ipc_finish(server);

@@ -12,6 +12,7 @@
 #include "server.h"
 #include "view.h"
 #include "layout.h"
+#include "focus_mode.h"
 
 /* ─── Task lifecycle ───────────────────────────────────────────── */
 
@@ -46,6 +47,20 @@ struct stw_task *stw_task_create(struct stw_server *server, const char *name) {
 	task->archived = false;
 	wl_list_init(&task->views);
 	wl_list_init(&task->pinned_apps);
+	wl_list_init(&task->notes);
+
+	/* Assign accent color from palette (cycle through 8 colors) */
+	static const uint32_t palette[] = {
+		0x7aa2f7ff, /* blue */
+		0xbb9af7ff, /* purple */
+		0x7dcfffff, /* cyan */
+		0xe0af68ff, /* yellow */
+		0x9ece6aff, /* green */
+		0xf7768eff, /* red */
+		0xff9e64ff, /* orange */
+		0x73dacaff, /* teal */
+	};
+	task->accent_color = palette[(server->next_task_id - 1) % 8];
 
 	/* Determine order (append at end) */
 	int max_order = 0;
@@ -126,10 +141,19 @@ void stw_task_destroy(struct stw_task *task) {
 		free(task->workspaces[i].name);
 	}
 
+	/* Clean up quick notes */
+	struct stw_quick_note *note, *note_tmp;
+	wl_list_for_each_safe(note, note_tmp, &task->notes, link) {
+		wl_list_remove(&note->link);
+		free(note->text);
+		free(note);
+	}
+
 	wl_list_remove(&task->link);
 	free(task->name);
 	free(task->icon);
 	free(task->layout_name);
+	free(task->sticky_note);
 	free(task);
 }
 
@@ -147,6 +171,9 @@ void stw_task_activate(struct stw_task *task) {
 	assert(task);
 	task->active = true;
 
+	/* Start task timer */
+	task->timer_switch_in = time(NULL);
+
 	/* Show all views belonging to this task */
 	struct stw_view *view;
 	wl_list_for_each(view, &task->views, task_link) {
@@ -159,6 +186,13 @@ void stw_task_activate(struct stw_task *task) {
 void stw_task_deactivate(struct stw_task *task) {
 	assert(task);
 	task->active = false;
+
+	/* Pause task timer */
+	if (task->timer_switch_in > 0) {
+		task->timer_total_secs += (uint64_t)difftime(time(NULL),
+			task->timer_switch_in);
+		task->timer_switch_in = 0;
+	}
 
 	/* Hide all non-global views belonging to this task */
 	struct stw_view *view;
@@ -178,6 +212,9 @@ void stw_task_switch_to(struct stw_server *server, struct stw_task *task) {
 	}
 
 	wlr_log(WLR_INFO, "Switching to task '%s' (id=%u)", task->name, task->id);
+
+	/* Record in breadcrumb trail */
+	stw_breadcrumb_record(&server->breadcrumbs, task->id, task->name);
 
 	/* Deactivate current task */
 	if (server->active_task) {
@@ -395,4 +432,36 @@ int stw_task_get_index(struct stw_task *task) {
 		}
 	}
 	return -1;
+}
+
+/* ─── ADHD-friendly: task timer ────────────────────────────────── */
+
+uint64_t stw_task_get_timer_seconds(struct stw_task *task) {
+	uint64_t total = task->timer_total_secs;
+	if (task->timer_switch_in > 0) {
+		total += (uint64_t)difftime(time(NULL), task->timer_switch_in);
+	}
+	return total;
+}
+
+/* ─── ADHD-friendly: quick notes ───────────────────────────────── */
+
+void stw_task_add_note(struct stw_task *task, const char *text) {
+	if (!task || !text) return;
+
+	struct stw_quick_note *note = calloc(1, sizeof(*note));
+	if (!note) return;
+
+	note->text = strdup(text);
+	note->created_at = time(NULL);
+	wl_list_insert(task->notes.prev, &note->link);
+
+	wlr_log(WLR_DEBUG, "Note added to task '%s': %.40s%s",
+		task->name, text, strlen(text) > 40 ? "..." : "");
+}
+
+void stw_task_set_sticky(struct stw_task *task, const char *text) {
+	if (!task) return;
+	free(task->sticky_note);
+	task->sticky_note = text ? strdup(text) : NULL;
 }

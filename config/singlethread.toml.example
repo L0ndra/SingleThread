@@ -120,6 +120,12 @@ max_tasks = 0
 "Super+Shift+Return" = "spawn:foot"
 "Super+Shift+q" = "compositor:exit"
 
+# ADHD-friendly: Focus mode & quick capture
+"Super+F12" = "focus:toggle"              # Toggle focus mode (DND + dimming)
+"Super+Shift+F12" = "focus:start:25"      # Start 25-min Pomodoro focus
+"Super+n" = "quicknote:open"              # Quick note capture (saves to task)
+"Super+Escape" = "focus:dismiss-break"    # Dismiss break reminder
+
 # ─── Window Rules ──────────────────────────────────────────────────
 # Rules match windows and assign behavior.
 # Match criteria: app_id, title (regex), class (XWayland)
@@ -222,3 +228,20 @@ background = "1a1b26"
 
 # Dim inactive windows (0.0 = no dim, 1.0 = fully dim)
 inactive_dim = 0.05
+
+# ─── Focus Mode (ADHD-Friendly) ───────────────────────────────────
+[focus]
+# Enable break reminders during focus mode
+break_reminders = true
+
+# Break interval in minutes (default: 25 = Pomodoro technique)
+break_interval = 25
+
+# Break duration in minutes
+break_duration = 5
+
+# Dim amount for inactive windows during focus mode (0.0 - 1.0)
+focus_dim = 0.3
+
+# Suppress notifications during focus mode
+suppress_notifications = true

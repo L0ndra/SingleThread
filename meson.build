@@ -102,6 +102,7 @@ if get_option('shell')
   subdir('src/shell/launcher')
   subdir('src/shell/switcher')
   subdir('src/shell/notifications')
+  subdir('src/shell/quicknote')
 endif
 
 # Install data files

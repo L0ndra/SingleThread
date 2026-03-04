@@ -19,6 +19,7 @@
 #include "task.h"
 #include "keybind.h"
 #include "stw_config.h"
+#include "focus_mode.h"
 
 /* ─── IPC socket path ──────────────────────────────────────────── */
 
@@ -96,6 +97,24 @@ static struct json_object *task_to_json(struct stw_task *task) {
 		json_object_new_int(stw_task_count_views(task)));
 	json_object_object_add(obj, "active_workspace",
 		json_object_new_int(task->active_workspace));
+
+	/* ADHD features: accent color as hex string */
+	char accent_hex[16];
+	snprintf(accent_hex, sizeof(accent_hex), "#%06x",
+		(task->accent_color >> 8) & 0xffffff);
+	json_object_object_add(obj, "accent_color",
+		json_object_new_string(accent_hex));
+
+	/* Task timer: cumulative seconds */
+	json_object_object_add(obj, "timer_seconds",
+		json_object_new_int64(stw_task_get_timer_seconds(task)));
+
+	/* Sticky note */
+	if (task->sticky_note) {
+		json_object_object_add(obj, "sticky_note",
+			json_object_new_string(task->sticky_note));
+	}
+
 	return obj;
 }
 
@@ -370,6 +389,115 @@ void stw_ipc_handle_command(struct stw_ipc_client *client,
 		} else {
 			send_error(client, "Missing 'exec'");
 		}
+	}
+
+	/* ─── ADHD-friendly commands ──────────────────────────────── */
+
+	else if (strcmp(cmd, "task/add-note") == 0) {
+		struct json_object *text_obj;
+		if (json_object_object_get_ex(req, "text", &text_obj) &&
+				server->active_task) {
+			stw_task_add_note(server->active_task,
+				json_object_get_string(text_obj));
+			send_ok(client, "Note added");
+		} else {
+			send_error(client, "Missing 'text' or no active task");
+		}
+	}
+
+	else if (strcmp(cmd, "task/set-sticky") == 0) {
+		struct json_object *text_obj;
+		if (json_object_object_get_ex(req, "text", &text_obj) &&
+				server->active_task) {
+			stw_task_set_sticky(server->active_task,
+				json_object_get_string(text_obj));
+			send_ok(client, "Sticky note set");
+		} else {
+			send_error(client, "Missing 'text' or no active task");
+		}
+	}
+
+	else if (strcmp(cmd, "task/notes") == 0) {
+		struct json_object *resp = json_object_new_object();
+		json_object_object_add(resp, "success",
+			json_object_new_boolean(true));
+		struct json_object *arr = json_object_new_array();
+		if (server->active_task) {
+			struct stw_quick_note *note;
+			wl_list_for_each(note, &server->active_task->notes, link) {
+				struct json_object *n = json_object_new_object();
+				json_object_object_add(n, "text",
+					json_object_new_string(note->text));
+				json_object_object_add(n, "created_at",
+					json_object_new_int64(note->created_at));
+				json_object_array_add(arr, n);
+			}
+		}
+		json_object_object_add(resp, "notes", arr);
+		stw_ipc_send(client, json_object_to_json_string(resp));
+		json_object_put(resp);
+	}
+
+	else if (strcmp(cmd, "focus/toggle") == 0) {
+		stw_focus_mode_toggle(server);
+		send_ok(client, server->focus_mode.active ?
+			"Focus mode started" : "Focus mode stopped");
+	}
+
+	else if (strcmp(cmd, "focus/start") == 0) {
+		struct json_object *mins_obj;
+		int mins = 0;
+		if (json_object_object_get_ex(req, "minutes", &mins_obj)) {
+			mins = json_object_get_int(mins_obj);
+		}
+		stw_focus_mode_start(server, mins);
+		send_ok(client, "Focus mode started");
+	}
+
+	else if (strcmp(cmd, "focus/stop") == 0) {
+		stw_focus_mode_stop(server);
+		send_ok(client, "Focus mode stopped");
+	}
+
+	else if (strcmp(cmd, "get/focus-mode") == 0) {
+		struct json_object *resp = json_object_new_object();
+		json_object_object_add(resp, "success",
+			json_object_new_boolean(true));
+		json_object_object_add(resp, "active",
+			json_object_new_boolean(server->focus_mode.active));
+		json_object_object_add(resp, "on_break",
+			json_object_new_boolean(server->focus_mode.on_break));
+		json_object_object_add(resp, "elapsed_minutes",
+			json_object_new_int(
+				stw_focus_mode_elapsed_minutes(server)));
+		json_object_object_add(resp, "break_interval",
+			json_object_new_int(
+				server->focus_mode.break_interval_minutes));
+		stw_ipc_send(client, json_object_to_json_string(resp));
+		json_object_put(resp);
+	}
+
+	else if (strcmp(cmd, "get/breadcrumbs") == 0) {
+		struct json_object *resp = json_object_new_object();
+		json_object_object_add(resp, "success",
+			json_object_new_boolean(true));
+		struct json_object *arr = json_object_new_array();
+		struct stw_breadcrumb recent[16];
+		int n = stw_breadcrumb_get_recent(&server->breadcrumbs,
+			recent, 16);
+		for (int bi = 0; bi < n; bi++) {
+			struct json_object *b = json_object_new_object();
+			json_object_object_add(b, "task_id",
+				json_object_new_int(recent[bi].task_id));
+			json_object_object_add(b, "task_name",
+				json_object_new_string(recent[bi].task_name));
+			json_object_object_add(b, "timestamp",
+				json_object_new_int64(recent[bi].timestamp));
+			json_object_array_add(arr, b);
+		}
+		json_object_object_add(resp, "breadcrumbs", arr);
+		stw_ipc_send(client, json_object_to_json_string(resp));
+		json_object_put(resp);
 	}
 
 	else {
