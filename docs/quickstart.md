@@ -25,6 +25,24 @@ cd packaging/arch
 makepkg -si
 ```
 
+### NixOS / Nix Flake
+
+```bash
+# Development shell (all deps included)
+nix develop
+
+# Build
+nix build
+
+# Or add to your NixOS config (see docs/testing-guide.md)
+```
+
+### macOS (via VM)
+
+SingleThread requires a Linux kernel (Wayland). See the full
+[Testing & Development Guide](testing-guide.md) for setting up a
+NixOS VM with UTM on macOS.
+
 ## First Run
 
 ### From a display manager
@@ -99,6 +117,14 @@ Default keybindings (all use `Super` as the modifier):
 | `Super+o` | Open overview |
 | `Super+Shift+Return` | Open terminal (foot) |
 | `Super+Shift+q` | Exit compositor |
+
+### ADHD-Friendly Features
+| Key | Action |
+|-----|--------|
+| `Super+F12` | Toggle focus mode (DND + dimming) |
+| `Super+Shift+F12` | Start 25-minute Pomodoro focus session |
+| `Super+n` | Quick note capture (saves to current task) |
+| `Super+Escape` | Dismiss break reminder |
 
 ## CLI Tool (stwctl)
 
