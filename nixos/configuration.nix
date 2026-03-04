@@ -44,7 +44,7 @@
     libinput
     libxkbcommon
     pixman
-    json-c
+    json_c
     gtk4
     gtk4-layer-shell
     libxcb
