@@ -47,8 +47,7 @@
     json_c
     gtk4
     gtk4-layer-shell
-    libxcb
-    xcb-util-errors
+    xorg.libxcb
 
     # Wayland utilities
     wl-clipboard
