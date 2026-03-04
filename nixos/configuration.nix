@@ -42,9 +42,9 @@
     wayland-scanner
     wlroots_0_18
     libinput
-    xkbcommon
+    libxkbcommon
     pixman
-    json_c
+    json-c
     gtk4
     gtk4-layer-shell
     libxcb
